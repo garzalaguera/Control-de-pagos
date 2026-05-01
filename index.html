@@ -11,8 +11,8 @@
   <link rel="manifest" href="manifest.json"/>
   <style>
     *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
-    html,body{height:100%;background:#0D1117;font-family:-apple-system,'Helvetica Neue',sans-serif;}
-    #root{height:100%;}
+    html,body,#root{height:100%;background:#0D1117;}
+    body{font-family:-apple-system,'Helvetica Neue',sans-serif;}
     ::-webkit-scrollbar{width:4px;}
     ::-webkit-scrollbar-track{background:#0D1117;}
     ::-webkit-scrollbar-thumb{background:#1e2535;border-radius:4px;}
@@ -22,96 +22,88 @@
   </style>
 </head>
 <body>
-<div id="root"></div>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script type="text/babel">
-const { useState, useMemo, useRef, useEffect } = React;
 
-// ── localStorage ──────────────────────────────────────────────
+<!-- Visible immediately while JS loads -->
+<div id="root">
+  <div style="display:flex;align-items:center;justify-content:center;height:100vh;">
+    <p style="color:#2a3044;font-size:11px;letter-spacing:3px;font-family:sans-serif;">KALIFA · PAGOS</p>
+  </div>
+</div>
+
+<!-- htm/preact standalone: React-compatible, only 8KB total -->
+<script src="https://unpkg.com/htm/preact/standalone.umd.js"></script>
+
+<script>
+const { html, render, useState, useMemo, useRef, useEffect } = htmPreact;
+
+// ── Storage ───────────────────────────────────────────────────
 const sGet = k => { try { const v=localStorage.getItem(k); return v?JSON.parse(v):null; } catch{return null;} };
 const sSet = (k,v) => { try { localStorage.setItem(k,JSON.stringify(v)); } catch{} };
 
-// ── IndexedDB (shared with SW) ────────────────────────────────
+// ── IndexedDB (shared with service worker) ────────────────────
 function openDB() {
   return new Promise((res,rej) => {
-    const r = indexedDB.open('kalifa-db',1);
+    const r=indexedDB.open('kalifa-db',1);
     r.onupgradeneeded = e => e.target.result.createObjectStore('kv');
     r.onsuccess = e => res(e.target.result);
-    r.onerror = () => rej(r.error);
+    r.onerror   = () => rej(r.error);
   });
 }
-async function idbSet(key, val) {
+async function idbSet(key,val) {
   const db = await openDB();
   return new Promise((res,rej) => {
-    const tx = db.transaction('kv','readwrite');
-    tx.objectStore('kv').put(val, key);
-    tx.oncomplete = res; tx.onerror = ()=>rej(tx.error);
+    const tx=db.transaction('kv','readwrite');
+    tx.objectStore('kv').put(val,key);
+    tx.oncomplete=res; tx.onerror=()=>rej(tx.error);
   });
 }
 
-// ── Notification + sync helpers ───────────────────────────────
+// ── Notifications & periodic sync ────────────────────────────
 async function requestNotifPermission() {
-  if (!('Notification' in window)) return 'unsupported';
-  if (Notification.permission !== 'default') return Notification.permission;
+  if(!('Notification' in window)) return 'unsupported';
+  if(Notification.permission !== 'default') return Notification.permission;
   return await Notification.requestPermission();
 }
-
 async function registerPeriodicSync() {
-  if (!('serviceWorker' in navigator)) return;
+  if(!('serviceWorker' in navigator)) return;
   try {
-    const reg = await navigator.serviceWorker.ready;
-    if (!('periodicSync' in reg)) return;
-    const tags = await reg.periodicSync.getTags();
-    if (!tags.includes('check-payments'))
-      await reg.periodicSync.register('check-payments', { minInterval: 12*60*60*1000 });
+    const reg=await navigator.serviceWorker.ready;
+    if(!('periodicSync' in reg)) return;
+    const tags=await reg.periodicSync.getTags();
+    if(!tags.includes('check-payments'))
+      await reg.periodicSync.register('check-payments',{minInterval:12*60*60*1000});
   } catch(e) {}
 }
-
-async function syncToSW(cards, payments) {
+async function syncToSW(cards,payments) {
   try {
-    const t = today0();
-    const items = [];
+    const t=today0(), items=[];
     cards.forEach(card => {
-      const addItem = p => {
-        if (p && p.cutDate<=t && !payments[p.key])
-          items.push({ cardName:card.name, limitDate:p.limitDate.toISOString(), key:p.key });
-      };
-      if (card.cycleType==='monthly') {
-        for (let i=-2;i<=1;i++) { const m=monthMeta(i); addItem(monthlyPeriod(card,m.year,m.month)); }
-      } else if (card.cycleType==='days') {
-        const curr=daysPeriodAt(card,t);
-        addItem(daysPrevPeriod(card,curr)); addItem(curr);
-      } else if (card.cycleType==='months') {
-        for (let i=-4;i<=1;i++) { const m=monthMeta(i); addItem(monthsPeriod(card,m.year,m.month)); }
-      }
+      const add = p => { if(p&&p.cutDate<=t&&!payments[p.key]) items.push({cardName:card.name,limitDate:p.limitDate.toISOString(),key:p.key}); };
+      if(card.cycleType==='monthly')      { for(let i=-2;i<=1;i++){const m=monthMeta(i);add(monthlyPeriod(card,m.year,m.month));} }
+      else if(card.cycleType==='days')    { const c=daysPeriodAt(card,t); add(daysPrevPeriod(card,c)); add(c); }
+      else if(card.cycleType==='months')  { for(let i=-4;i<=1;i++){const m=monthMeta(i);add(monthsPeriod(card,m.year,m.month));} }
     });
-    await idbSet('upcoming', { items, updated: new Date().toISOString() });
+    await idbSet('upcoming',{items,updated:new Date().toISOString()});
   } catch(e) {}
 }
 
-// ── Backup helpers ─────────────────────────────────────────────
-function exportData(cards, payments) {
-  const data = { version:1, exportDate:new Date().toISOString(), cards, payments };
-  const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'});
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
+// ── Backup ────────────────────────────────────────────────────
+function exportData(cards,payments) {
+  const blob=new Blob([JSON.stringify({version:1,exportDate:new Date().toISOString(),cards,payments},null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob), a=document.createElement('a');
   a.href=url; a.download=`kalifa-pagos-${new Date().toISOString().slice(0,10)}.json`;
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a); URL.revokeObjectURL(url);
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
 }
-
-function importData(file, onSuccess, onError) {
-  const reader = new FileReader();
-  reader.onload = e => {
+function importData(file,onSuccess,onError) {
+  const r=new FileReader();
+  r.onload = e => {
     try {
-      const data = JSON.parse(e.target.result);
-      if (!data.cards || !Array.isArray(data.cards)) throw new Error('Formato inválido');
-      onSuccess(data.cards, data.payments || {});
-    } catch(err) { onError('Archivo no válido: ' + err.message); }
+      const d=JSON.parse(e.target.result);
+      if(!d.cards||!Array.isArray(d.cards)) throw new Error('Formato inválido');
+      onSuccess(d.cards, d.payments||{});
+    } catch(err) { onError('Archivo no válido: '+err.message); }
   };
-  reader.readAsText(file);
+  r.readAsText(file);
 }
 
 // ── Constants ─────────────────────────────────────────────────
@@ -120,18 +112,17 @@ const MESES_C = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","No
 const PALETTE = ["#C9A96E","#7EB5A6","#E07B7B","#A78BFA","#60A5FA","#F59E0B","#F472B6","#34D399","#FB923C","#818CF8"];
 
 function blankCard(i) {
-  const today = new Date();
+  const d=new Date();
   return {
     id:`c${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
-    name:`Servicio ${i+1}`, color:PALETTE[i%PALETTE.length], cycleType:"monthly",
-    cutDay:1, limitDay:20, limitOffset:1,
-    intervalDays:30, startDate:today.toISOString().slice(0,10), limitDays:20,
+    name:`Servicio ${i+1}`, color:PALETTE[i%PALETTE.length], cycleType:'monthly',
+    cutDay:1,limitDay:20,limitOffset:1,
+    intervalDays:30, startDate:d.toISOString().slice(0,10), limitDays:20,
     intervalMonths:2, cutDayM:1,
-    startYearMonth:`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`,
+    startYearMonth:`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`,
     limitDayM:20, limitOffsetM:1,
   };
 }
-
 const DEFAULT_CARDS = Array.from({length:6},(_,i)=>({
   ...blankCard(i), id:`c${i+1}`,
   cutDay:[10,15,20,25,1,5][i], limitDay:[5,10,15,20,28,30][i], limitOffset:i<4?1:0,
@@ -141,35 +132,33 @@ const DEFAULT_CARDS = Array.from({length:6},(_,i)=>({
 const today0  = () => { const t=new Date(); t.setHours(0,0,0,0); return t; };
 const dim     = (y,m) => new Date(y,m,0).getDate();
 const clampD  = (d,y,m) => Math.min(d,dim(y,m));
-function monthMeta(offset=0) {
-  const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+offset);
+const fmtS    = d => `${d.getDate()} ${MESES_C[d.getMonth()]}`;
+const fmtF    = d => `${d.getDate()} ${MESES_C[d.getMonth()]} ${d.getFullYear()}`;
+const dleft   = lim => Math.ceil((lim-today0())/86400000);
+const pctE    = (cut,lim) => { const t=today0(); if(t<cut)return 0; return Math.min(100,Math.max(0,((t-cut)/(lim-cut))*100)); };
+
+function monthMeta(off=0) {
+  const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+off);
   return {year:d.getFullYear(), month:d.getMonth()+1};
 }
-const fmtShort = d => `${d.getDate()} ${MESES_C[d.getMonth()]}`;
-const fmtFull  = d => `${d.getDate()} ${MESES_C[d.getMonth()]} ${d.getFullYear()}`;
-const daysLeft = lim => Math.ceil((lim-today0())/86400000);
-const pctElaps = (cut,lim) => { const t=today0(); if(t<cut)return 0; return Math.min(100,Math.max(0,((t-cut)/(lim-cut))*100)); };
 
 // ── Period logic ───────────────────────────────────────────────
 function monthlyPeriod(card,year,month) {
-  const cutDate = new Date(year,month-1,clampD(card.cutDay,year,month));
+  const cut=new Date(year,month-1,clampD(card.cutDay,year,month));
   let ly=year,lm=month+card.limitOffset; if(lm>12){lm-=12;ly++;}
-  const limitDate = new Date(ly,lm-1,clampD(card.limitDay,ly,lm));
-  return {cutDate,limitDate,key:`${card.id}:M:${year}-${String(month).padStart(2,'0')}`};
+  return {cutDate:cut, limitDate:new Date(ly,lm-1,clampD(card.limitDay,ly,lm)), key:`${card.id}:M:${year}-${String(month).padStart(2,'0')}`};
 }
 function daysPeriodAt(card,ref) {
   const start=new Date(card.startDate+'T00:00:00');
   if(ref<start) return null;
   const n=Math.floor((ref-start)/(card.intervalDays*86400000));
   const cut=new Date(start.getTime()+n*card.intervalDays*86400000);
-  const lim=new Date(cut.getTime()+card.limitDays*86400000);
-  return {cutDate:cut,limitDate:lim,key:`${card.id}:D:${cut.toISOString().slice(0,10)}`,n};
+  return {cutDate:cut, limitDate:new Date(cut.getTime()+card.limitDays*86400000), key:`${card.id}:D:${cut.toISOString().slice(0,10)}`, n};
 }
 function daysPrevPeriod(card,curr) {
   if(!curr||curr.n<=0) return null;
   const cut=new Date(curr.cutDate.getTime()-card.intervalDays*86400000);
-  const lim=new Date(cut.getTime()+card.limitDays*86400000);
-  return {cutDate:cut,limitDate:lim,key:`${card.id}:D:${cut.toISOString().slice(0,10)}`,n:curr.n-1};
+  return {cutDate:cut, limitDate:new Date(cut.getTime()+card.limitDays*86400000), key:`${card.id}:D:${cut.toISOString().slice(0,10)}`, n:curr.n-1};
 }
 function monthsHasCut(card,year,month) {
   const [sy,sm]=card.startYearMonth.split('-').map(Number);
@@ -178,10 +167,9 @@ function monthsHasCut(card,year,month) {
 }
 function monthsPeriod(card,year,month) {
   if(!monthsHasCut(card,year,month)) return null;
-  const cutDate=new Date(year,month-1,clampD(card.cutDayM,year,month));
+  const cut=new Date(year,month-1,clampD(card.cutDayM,year,month));
   let ly=year,lm=month+card.limitOffsetM; if(lm>12){lm-=12;ly++;}
-  const limitDate=new Date(ly,lm-1,clampD(card.limitDayM,ly,lm));
-  return {cutDate,limitDate,key:`${card.id}:NM:${year}-${String(month).padStart(2,'0')}`};
+  return {cutDate:cut, limitDate:new Date(ly,lm-1,clampD(card.limitDayM,ly,lm)), key:`${card.id}:NM:${year}-${String(month).padStart(2,'0')}`};
 }
 function viewPeriod(card,year,month) {
   if(card.cycleType==='monthly') return monthlyPeriod(card,year,month);
@@ -191,24 +179,20 @@ function viewPeriod(card,year,month) {
     const fromStart=daysPeriodAt(card,new Date(year,month-1,1));
     for(const p of [curr,prev,fromStart]) {
       if(!p) continue;
-      const cy=p.cutDate.getFullYear(),cm=p.cutDate.getMonth()+1;
-      const ly=p.limitDate.getFullYear(),lm=p.limitDate.getMonth()+1;
-      if((cy===year&&cm===month)||(ly===year&&lm===month)) return p;
+      if((p.cutDate.getFullYear()===year&&p.cutDate.getMonth()+1===month)||(p.limitDate.getFullYear()===year&&p.limitDate.getMonth()+1===month)) return p;
     }
     return null;
   }
   return null;
 }
-function pStatus(cut,lim) {
-  const t=today0(); if(t>lim)return'vencido'; if(t>=cut)return'activo'; return'futuro';
-}
+function pStatus(cut,lim) { const t=today0(); return t>lim?'vencido':t>=cut?'activo':'futuro'; }
 function pendingOf(card,payments) {
   const t=today0(),out=[];
   if(card.cycleType==='monthly') {
     for(let i=-4;i<=0;i++){const m=monthMeta(i);const p=monthlyPeriod(card,m.year,m.month);if(p.cutDate<=t&&!payments[p.key])out.push(p);}
   } else if(card.cycleType==='days') {
     const curr=daysPeriodAt(card,t),prev=daysPrevPeriod(card,curr);
-    for(const p of[prev,curr])if(p&&p.cutDate<=t&&!payments[p.key])out.push(p);
+    for(const p of[prev,curr]) if(p&&p.cutDate<=t&&!payments[p.key])out.push(p);
   } else if(card.cycleType==='months') {
     for(let i=-8;i<=0;i++){const m=monthMeta(i);const p=monthsPeriod(card,m.year,m.month);if(p&&p.cutDate<=t&&!payments[p.key])out.push(p);}
   }
@@ -216,199 +200,175 @@ function pendingOf(card,payments) {
 }
 
 // ── Shared styles ──────────────────────────────────────────────
-const inp = {
-  display:'block',width:'100%',background:'#111827',
-  border:'1px solid #2a3044',borderRadius:8,
-  padding:'8px 10px',color:'#E8E8E8',fontSize:13,
-  marginTop:4,boxSizing:'border-box',outline:'none',
+const BB = {fontSize:11,padding:'3px 9px',borderRadius:20,fontWeight:600,whiteSpace:'nowrap'};
+const BS = {
+  paid:   {...BB,background:'#0c2215',color:'#4ade80'},
+  red:    {...BB,background:'#2b0d0d',color:'#f87171'},
+  yellow: {...BB,background:'#1c1500',color:'#fbbf24'},
+  grey:   {...BB,background:'#141824',color:'#4a5568'},
 };
-const badgeBase = {fontSize:11,padding:'3px 9px',borderRadius:20,fontWeight:600,whiteSpace:'nowrap'};
+const INP = {display:'block',width:'100%',background:'#111827',border:'1px solid #2a3044',borderRadius:8,padding:'8px 10px',color:'#E8E8E8',fontSize:13,marginTop:4,boxSizing:'border-box',outline:'none'};
 
-// ── UI Components ──────────────────────────────────────────────
+// ── Small components ───────────────────────────────────────────
 function Badge({status,paid}) {
-  if(paid)               return <span style={{...badgeBase,background:'#0c2215',color:'#4ade80'}}>✓ Pagado</span>;
-  if(status==='vencido') return <span style={{...badgeBase,background:'#2b0d0d',color:'#f87171'}}>! Urgente</span>;
-  if(status==='activo')  return <span style={{...badgeBase,background:'#1c1500',color:'#fbbf24'}}>En plazo</span>;
-  return                        <span style={{...badgeBase,background:'#141824',color:'#4a5568'}}>Pendiente</span>;
+  const s   = paid?BS.paid:status==='vencido'?BS.red:status==='activo'?BS.yellow:BS.grey;
+  const txt = paid?'✓ Pagado':status==='vencido'?'! Urgente':status==='activo'?'En plazo':'Pendiente';
+  return html`<span style=${s}>${txt}</span>`;
 }
 
 function ProgressBar({cutDate,limitDate,paid,color}) {
-  const status=pStatus(cutDate,limitDate), pct=pctElaps(cutDate,limitDate), dl=daysLeft(limitDate);
-  const barC=paid?'#4ade80':status==='vencido'?'#EF4444':pct>80?'#F59E0B':color;
-  const label=paid?'✓ Listo':status==='futuro'?`Corte: ${fmtShort(cutDate)}`:status==='vencido'?'⚠ Límite superado':dl<=0?'⚠ Vence hoy':`${dl}d para límite · ${fmtShort(limitDate)}`;
-  const labelC=paid?'#4ade80':status==='vencido'?'#f87171':'#4a5568';
-  return (
-    <div style={{marginTop:7}}>
-      <div style={{background:'#1a1f2e',borderRadius:3,height:3,overflow:'hidden'}}>
-        <div style={{height:'100%',width:`${paid?100:pct}%`,background:barC,borderRadius:3}}/>
+  const st=pStatus(cutDate,limitDate), pct=pctE(cutDate,limitDate), dl=dleft(limitDate);
+  const barC = paid?'#4ade80':st==='vencido'?'#EF4444':pct>80?'#F59E0B':color;
+  const label = paid?'✓ Listo':st==='futuro'?`Corte: ${fmtS(cutDate)}`:st==='vencido'?'⚠ Límite superado':dl<=0?'⚠ Vence hoy':`${dl}d para límite · ${fmtS(limitDate)}`;
+  const labelC = paid?'#4ade80':st==='vencido'?'#f87171':'#4a5568';
+  return html`
+    <div style=${{marginTop:7}}>
+      <div style=${{background:'#1a1f2e',borderRadius:3,height:3,overflow:'hidden'}}>
+        <div style=${{height:'100%',width:`${paid?100:pct}%`,background:barC,borderRadius:3}}/>
       </div>
-      <div style={{fontSize:10,color:labelC,marginTop:4}}>{label}</div>
-    </div>
-  );
+      <div style=${{fontSize:10,color:labelC,marginTop:4}}>${label}</div>
+    </div>`;
 }
 
 function CheckBtn({checked,color,onToggle}) {
-  return (
-    <button onClick={onToggle} style={{
+  return html`
+    <button onClick=${onToggle} style=${{
       width:30,height:30,borderRadius:8,flexShrink:0,
       border:`2px solid ${checked?color:'#2a3044'}`,
       background:checked?color:'transparent',
       cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',
-      fontSize:15,color:'#0D1117',fontWeight:800,transition:'all 0.15s',
-    }}>{checked?'✓':''}</button>
-  );
+      fontSize:15,color:'#0D1117',fontWeight:800,
+    }}>${checked?'✓':''}</button>`;
 }
 
 function CardRow({card,year,month,payments,onToggle}) {
   const period=viewPeriod(card,year,month);
   const paid=period?!!payments[period.key]:false;
-  const status=period?pStatus(period.cutDate,period.limitDate):'none';
-  return (
-    <div style={{
-      background:'#0f1520',
-      border:`1px solid ${paid?'#1a3826':status==='vencido'?'#3b1616':'#1e2535'}`,
-      borderRadius:12,padding:'13px 14px',display:'flex',alignItems:'flex-start',gap:12,
-      opacity:!period?0.35:paid?0.72:1,
-    }}>
-      <div style={{width:3,minHeight:46,borderRadius:2,background:paid?'#4ade80':card.color,flexShrink:0,marginTop:2}}/>
-      <div style={{flex:1,minWidth:0}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+  const st=period?pStatus(period.cutDate,period.limitDate):'none';
+  return html`
+    <div style=${{background:'#0f1520',border:`1px solid ${paid?'#1a3826':st==='vencido'?'#3b1616':'#1e2535'}`,
+      borderRadius:12,padding:'13px 14px',display:'flex',alignItems:'flex-start',gap:12,opacity:!period?0.35:paid?0.72:1}}>
+      <div style=${{width:3,minHeight:46,borderRadius:2,background:paid?'#4ade80':card.color,flexShrink:0,marginTop:2}}/>
+      <div style=${{flex:1,minWidth:0}}>
+        <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
           <div>
-            <div style={{fontWeight:600,fontSize:14,color:'#E8E8E8',marginBottom:2}}>{card.name}</div>
-            <div style={{fontSize:11,color:'#3a4455'}}>
-              {!period?'Sin corte este mes':`Corte ${fmtShort(period.cutDate)} · Límite ${fmtShort(period.limitDate)}`}
+            <div style=${{fontWeight:600,fontSize:14,color:'#E8E8E8',marginBottom:2}}>${card.name}</div>
+            <div style=${{fontSize:11,color:'#3a4455'}}>
+              ${!period?'Sin corte este mes':`Corte ${fmtS(period.cutDate)} · Límite ${fmtS(period.limitDate)}`}
             </div>
           </div>
-          {period&&<Badge status={status} paid={paid}/>}
+          ${period&&html`<${Badge} status=${st} paid=${paid}/>`}
         </div>
-        {period&&<ProgressBar cutDate={period.cutDate} limitDate={period.limitDate} paid={paid} color={card.color}/>}
+        ${period&&html`<${ProgressBar} cutDate=${period.cutDate} limitDate=${period.limitDate} paid=${paid} color=${card.color}/>`}
       </div>
-      {period&&<CheckBtn checked={paid} color={card.color} onToggle={()=>onToggle(period.key)}/>}
-    </div>
-  );
+      ${period&&html`<${CheckBtn} checked=${paid} color=${card.color} onToggle=${()=>onToggle(period.key)}/>`}
+    </div>`;
 }
 
 function SummaryBar({cards,year,month,payments}) {
   const rel=cards.filter(c=>!!viewPeriod(c,year,month));
   const paidN=rel.filter(c=>{const p=viewPeriod(c,year,month);return p&&!!payments[p.key];}).length;
   const pct=rel.length?(paidN/rel.length)*100:0, allOk=rel.length>0&&paidN===rel.length;
-  return (
-    <div style={{background:'#0f1520',border:'1px solid #1e2535',borderRadius:12,padding:'13px 16px',marginBottom:16}}>
-      <div style={{display:'flex',justifyContent:'space-between',marginBottom:8,alignItems:'center'}}>
-        <span style={{fontSize:12,color:'#4a5568'}}>Progreso del mes</span>
-        <span style={{fontSize:13,fontWeight:700,color:allOk?'#4ade80':'#E8E8E8'}}>{paidN}/{rel.length} {allOk?'✓ Completado':'pagadas'}</span>
+  return html`
+    <div style=${{background:'#0f1520',border:'1px solid #1e2535',borderRadius:12,padding:'13px 16px',marginBottom:16}}>
+      <div style=${{display:'flex',justifyContent:'space-between',marginBottom:8,alignItems:'center'}}>
+        <span style=${{fontSize:12,color:'#4a5568'}}>Progreso del mes</span>
+        <span style=${{fontSize:13,fontWeight:700,color:allOk?'#4ade80':'#E8E8E8'}}>${paidN}/${rel.length} ${allOk?'✓ Completado':'pagadas'}</span>
       </div>
-      <div style={{background:'#1a1f2e',borderRadius:4,height:5,overflow:'hidden'}}>
-        <div style={{height:'100%',width:`${pct}%`,background:allOk?'#4ade80':'#7EB5A6',borderRadius:4}}/>
+      <div style=${{background:'#1a1f2e',borderRadius:4,height:5,overflow:'hidden'}}>
+        <div style=${{height:'100%',width:`${pct}%`,background:allOk?'#4ade80':'#7EB5A6',borderRadius:4}}/>
       </div>
-    </div>
-  );
+    </div>`;
 }
 
 function PendingView({cards,payments,onToggle}) {
-  const t=today0();
   const items=[];
-  cards.forEach(card=>{
-    pendingOf(card,payments).forEach(p=>{
-      const status=pStatus(p.cutDate,p.limitDate),dl=daysLeft(p.limitDate);
-      items.push({card,period:p,status,dl});
-    });
-  });
-  items.sort((a,b)=>{
-    const av=a.status==='vencido',bv=b.status==='vencido';
-    if(av&&!bv)return -1; if(!av&&bv)return 1; return a.dl-b.dl;
-  });
-  if(items.length===0) return (
-    <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'60px 20px',gap:12}}>
-      <div style={{fontSize:36}}>✓</div>
-      <div style={{fontSize:17,fontWeight:700,color:'#4ade80'}}>Todo al corriente</div>
-      <div style={{fontSize:13,color:'#3a4455',textAlign:'center'}}>No hay pagos pendientes</div>
-    </div>
-  );
-  return (
-    <div style={{display:'flex',flexDirection:'column',gap:9}}>
-      <div style={{fontSize:11,color:'#3a4455',letterSpacing:0.5,marginBottom:2}}>
-        {items.length} pago{items.length!==1?'s':''} pendiente{items.length!==1?'s':''}
-      </div>
-      {items.map(({card,period,status})=>(
-        <div key={period.key} style={{
-          background:'#0f1520',
-          border:`1px solid ${status==='vencido'?'#3b1616':'#1e2535'}`,
-          borderRadius:12,padding:'13px 14px',display:'flex',alignItems:'center',gap:12,
-        }}>
-          <div style={{width:3,alignSelf:'stretch',borderRadius:2,background:card.color,flexShrink:0}}/>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+  cards.forEach(card=>pendingOf(card,payments).forEach(p=>items.push({card,period:p,status:pStatus(p.cutDate,p.limitDate),dl:dleft(p.limitDate)})));
+  items.sort((a,b)=>{const av=a.status==='vencido',bv=b.status==='vencido'; if(av&&!bv)return -1; if(!av&&bv)return 1; return a.dl-b.dl;});
+  if(!items.length) return html`
+    <div style=${{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'60px 20px',gap:12}}>
+      <div style=${{fontSize:36}}>✓</div>
+      <div style=${{fontSize:17,fontWeight:700,color:'#4ade80'}}>Todo al corriente</div>
+      <div style=${{fontSize:13,color:'#3a4455',textAlign:'center'}}>No hay pagos pendientes</div>
+    </div>`;
+  return html`
+    <div style=${{display:'flex',flexDirection:'column',gap:9}}>
+      <div style=${{fontSize:11,color:'#3a4455',marginBottom:2}}>${items.length} pago${items.length!==1?'s':''} pendiente${items.length!==1?'s':''}</div>
+      ${items.map(({card,period,status})=>html`
+        <div key=${period.key} style=${{background:'#0f1520',border:`1px solid ${status==='vencido'?'#3b1616':'#1e2535'}`,borderRadius:12,padding:'13px 14px',display:'flex',alignItems:'center',gap:12}}>
+          <div style=${{width:3,alignSelf:'stretch',borderRadius:2,background:card.color,flexShrink:0}}/>
+          <div style=${{flex:1,minWidth:0}}>
+            <div style=${{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
               <div>
-                <div style={{fontWeight:600,fontSize:14,color:'#E8E8E8',marginBottom:2}}>{card.name}</div>
-                <div style={{fontSize:11,color:'#3a4455'}}>Corte {fmtFull(period.cutDate)} · Límite {fmtFull(period.limitDate)}</div>
+                <div style=${{fontWeight:600,fontSize:14,color:'#E8E8E8',marginBottom:2}}>${card.name}</div>
+                <div style=${{fontSize:11,color:'#3a4455'}}>Corte ${fmtF(period.cutDate)} · Límite ${fmtF(period.limitDate)}</div>
               </div>
-              <Badge status={status} paid={false}/>
+              <${Badge} status=${status} paid=${false}/>
             </div>
-            <ProgressBar cutDate={period.cutDate} limitDate={period.limitDate} paid={false} color={card.color}/>
+            <${ProgressBar} cutDate=${period.cutDate} limitDate=${period.limitDate} paid=${false} color=${card.color}/>
           </div>
-          <CheckBtn checked={false} color={card.color} onToggle={()=>onToggle(period.key)}/>
-        </div>
-      ))}
-    </div>
-  );
+          <${CheckBtn} checked=${false} color=${card.color} onToggle=${()=>onToggle(period.key)}/>
+        </div>`)}
+    </div>`;
 }
 
-// ── Notification banner ───────────────────────────────────────
 function NotifBanner({onEnable,onDismiss}) {
-  return (
-    <div style={{
-      background:'#111827',border:'1px solid #2a3044',borderRadius:12,
-      padding:'12px 14px',marginBottom:14,
-      display:'flex',alignItems:'center',gap:12,
-    }}>
-      <div style={{fontSize:20}}>🔔</div>
-      <div style={{flex:1}}>
-        <div style={{fontSize:13,fontWeight:600,color:'#E8E8E8',marginBottom:2}}>Activar recordatorios</div>
-        <div style={{fontSize:11,color:'#4a5568'}}>Recibe alertas 5 días antes de cada vencimiento</div>
+  return html`
+    <div style=${{background:'#111827',border:'1px solid #2a3044',borderRadius:12,padding:'12px 14px',marginBottom:14,display:'flex',alignItems:'center',gap:12}}>
+      <div style=${{fontSize:20}}>🔔</div>
+      <div style=${{flex:1}}>
+        <div style=${{fontSize:13,fontWeight:600,color:'#E8E8E8',marginBottom:2}}>Activar recordatorios</div>
+        <div style=${{fontSize:11,color:'#4a5568'}}>Alertas 5 días antes de cada vencimiento</div>
       </div>
-      <div style={{display:'flex',gap:6}}>
-        <button onClick={onDismiss} style={{background:'none',border:'none',color:'#555',fontSize:18,cursor:'pointer',padding:'4px'}}>✕</button>
-        <button onClick={onEnable} style={{
-          background:'#7EB5A6',border:'none',borderRadius:8,
-          color:'#0D1117',fontSize:12,fontWeight:700,cursor:'pointer',
-          padding:'6px 12px',whiteSpace:'nowrap',
-        }}>Activar</button>
+      <div style=${{display:'flex',gap:6}}>
+        <button onClick=${onDismiss} style=${{background:'none',border:'none',color:'#555',fontSize:18,cursor:'pointer',padding:'4px'}}>✕</button>
+        <button onClick=${onEnable} style=${{background:'#7EB5A6',border:'none',borderRadius:8,color:'#0D1117',fontSize:12,fontWeight:700,cursor:'pointer',padding:'6px 12px',whiteSpace:'nowrap'}}>Activar</button>
       </div>
-    </div>
-  );
+    </div>`;
 }
 
-// ── Settings panel ────────────────────────────────────────────
-function FieldRow({children}) { return <div style={{display:'flex',gap:8,marginTop:8}}>{children}</div>; }
-function Lbl({text,children}) { return <label style={{flex:1,fontSize:11,color:'#4a5568'}}>{text}{children}</label>; }
-function NumInp({value,min=1,max=31,onChange}) { return <input type="number" min={min} max={max} value={value} onChange={e=>onChange(e.target.value)} style={inp}/>; }
-
+// ── Card editor (settings) ────────────────────────────────────
 function CardEditor({card,onChange,onDelete}) {
   const upd  = (f,v) => onChange({...card,[f]:v});
   const updN = (f,v) => onChange({...card,[f]:parseInt(v)||0});
-  return (
-    <div style={{background:'#111827',borderRadius:12,padding:14,marginBottom:10}}>
-      <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:10}}>
-        <input type="color" value={card.color} onChange={e=>upd('color',e.target.value)}
-          style={{width:30,height:30,borderRadius:6,border:'1px solid #2a3044',cursor:'pointer',padding:2,background:'#1a1f2e',flexShrink:0}}/>
-        <input value={card.name} onChange={e=>upd('name',e.target.value)} placeholder="Nombre del servicio"
-          style={{...inp,marginTop:0,flex:1}}/>
-        <button onClick={onDelete} style={{background:'#2b0d0d',border:'1px solid #5a1f1f',color:'#f87171',
-          width:30,height:30,borderRadius:8,cursor:'pointer',fontSize:14,flexShrink:0,
-          display:'flex',alignItems:'center',justifyContent:'center'}}>🗑</button>
+  return html`
+    <div style=${{background:'#111827',borderRadius:12,padding:14,marginBottom:10}}>
+      <div style=${{display:'flex',gap:10,alignItems:'center',marginBottom:10}}>
+        <input type="color" value=${card.color} onInput=${e=>upd('color',e.target.value)}
+          style=${{width:30,height:30,borderRadius:6,border:'1px solid #2a3044',cursor:'pointer',padding:2,background:'#1a1f2e',flexShrink:0}}/>
+        <input value=${card.name} onInput=${e=>upd('name',e.target.value)} placeholder="Nombre del servicio"
+          style=${{...INP,marginTop:0,flex:1}}/>
+        <button onClick=${onDelete}
+          style=${{background:'#2b0d0d',border:'1px solid #5a1f1f',color:'#f87171',width:30,height:30,borderRadius:8,cursor:'pointer',fontSize:14,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center'}}>🗑</button>
       </div>
-      <Lbl text="Tipo de ciclo">
-        <select value={card.cycleType} onChange={e=>upd('cycleType',e.target.value)} style={{...inp,fontSize:12}}>
+      <label style=${{fontSize:11,color:'#4a5568'}}>Tipo de ciclo
+        <select value=${card.cycleType} onChange=${e=>upd('cycleType',e.target.value)} style=${{...INP,fontSize:12}}>
           <option value="monthly">Mensual — fecha fija</option>
           <option value="days">Cada N días naturales</option>
           <option value="months">Cada N meses</option>
         </select>
-      </Lbl>
-      {card.cycleType==='monthly'&&(
-        <FieldRow>
-          <Lbl text="Día de corte"><NumInp value={card.cutDay}   onChange={v=>updN('cutDay',v)}/></Lbl>
-          <Lbl text="Día límite">  <NumInp value={card.limitDay} onChange={v=>updN('limitDay',v)}/></Lbl>
-          <Lbl text="Mes límite">
-            <select value={card.limitOffset} onChange={e=>updN('limitOffset',e.target.value)} style={{...inp,fontSize:12}}>
-              <option value="0">Mismo</option><option value="1">Sigu
+      </label>
+
+      ${card.cycleType==='monthly'&&html`
+        <div style=${{display:'flex',gap:8,marginTop:8}}>
+          <label style=${{flex:1,fontSize:11,color:'#4a5568'}}>Día de corte
+            <input type="number" min="1" max="31" value=${card.cutDay} onInput=${e=>updN('cutDay',e.target.value)} style=${INP}/>
+          </label>
+          <label style=${{flex:1,fontSize:11,color:'#4a5568'}}>Día límite
+            <input type="number" min="1" max="31" value=${card.limitDay} onInput=${e=>updN('limitDay',e.target.value)} style=${INP}/>
+          </label>
+          <label style=${{flex:1,fontSize:11,color:'#4a5568'}}>Mes límite
+            <select value=${card.limitOffset} onChange=${e=>updN('limitOffset',e.target.value)} style=${{...INP,fontSize:12}}>
+              <option value="0">Mismo</option><option value="1">Siguiente</option>
+            </select>
+          </label>
+        </div>`}
+
+      ${card.cycleType==='days'&&html`
+        <div>
+          <div style=${{display:'flex',gap:8,marginTop:8}}>
+            <label style=${{flex:1,fontSize:11,color:'#4a5568'}}>Cada cuántos días
+              <input type="number" min="1" max="365" value=${card.intervalDays} onInput=${e=>updN('intervalDays',e.target.value)} style=${INP}/>
+            </label>
+            <label style=${{flex:1,fontSize:11,color:'#4a5568'}}>Días para pagar
+              <input type="number" min="1" max="60" value=${card.limitDays} o
