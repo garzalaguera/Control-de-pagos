@@ -1,7 +1,7 @@
 {
-  "name": "Kalifa Pagos",
+  "name": "Mis Pagos",
   "short_name": "Pagos",
-  "description": "Gestor de pagos de tarjetas de crédito",
+  "description": "Control personal de pagos y vencimientos",
   "start_url": "/Control-de-pagos/",
   "scope": "/Control-de-pagos/",
   "display": "standalone",
