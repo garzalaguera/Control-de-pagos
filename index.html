@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="theme-color" content="#0D1117"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Kalifa Pagos"/>
+  <title>Kalifa · Pagos</title>
+  <link rel="manifest" href="manifest.json"/>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+    html,body{height:100%;background:#0D1117;font-family:-apple-system,'Helvetica Neue',sans-serif;}
+    #root{height:100%;}
+    ::-webkit-scrollbar{width:4px;}
+    ::-webkit-scrollbar-track{background:#0D1117;}
+    ::-webkit-scrollbar-thumb{background:#1e2535;border-radius:4px;}
+    select option{background:#1a1f2e;}
+    input[type=number]::-webkit-inner-spin-button{opacity:1;}
+    input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.5);}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useMemo } = React;
+
+// ── Storage ──────────────────────────────────────────────────
+const sGet = k => { try { const v=localStorage.getItem(k); return v?JSON.parse(v):null; } catch { return null; } };
+const sSet = (k,v) => { try { localStorage.setItem(k,JSON.stringify(v)); } catch {} };
+
+// ── Constants ─────────────────────────────────────────────────
+const MESES      = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+const MESES_C    = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+const PALETTE    = ["#C9A96E","#7EB5A6","#E07B7B","#A78BFA","#60A5FA","#F59E0B","#F472B6","#34D399","#FB923C","#818CF8"];
+
+// ── Default cards ─────────────────────────────────────────────
+function blankCard(i) {
+  const today = new Date();
+  return {
+    id: `c${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+    name: `Tarjeta ${i+1}`,
+    color: PALETTE[i % PALETTE.length],
+    cycleType: "monthly",
+    // monthly
+    cutDay: 1, limitDay: 20, limitOffset: 1,
+    // days
+    intervalDays: 30,
+    startDate: today.toISOString().slice(0,10),
+    limitDays: 20,
+    // months
+    intervalMonths: 2,
+    cutDayM: 1,
+    startYearMonth: `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`,
+    limitDayM: 20, limitOffsetM: 1,
+  };
+}
+
+const DEFAULT_CARDS = Array.from({length:6}, (_,i) => ({
+  ...blankCard(i),
+  id: `c${i+1}`,
+  cutDay:  [10,15,20,25,1,5][i],
+  limitDay:[5,10,15,20,28,30][i],
+  limitOffset: i<4?1:0,
+}));
+
+// ── Date helpers ──────────────────────────────────────────────
+const today0 = () => { const t=new Date(); t.setHours(0,0,0,0); return t; };
+const dim = (y,m) => new Date(y,m,0).getDate();
+const clampDay = (d,y,m) => Math.min(d, dim(y,m));
+
+function monthMeta(offset=0) {
+  const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+offset);
+  return { year:d.getFullYear(), month:d.getMonth()+1 };
+}
+
+function fmtDate(d) { return `${d.getDate()} ${MESES_C[d.getMonth()]} ${d.getFullYear()}`; }
+function fmtDateShort(d) { return `${d.getDate()} ${MESES_C[d.getMonth()]}`; }
+
+function daysRemaining(limitDate) { return Math.ceil((limitDate - today0()) / 86400000); }
+function pctElapsed(cutDate, limitDate) {
+  const t=today0();
+  if (t<cutDate) return 0;
+  return Math.min(100, Math.max(0, ((t-cutDate)/(limitDate-cutDate))*100));
+}
+
+// ── Period computation ────────────────────────────────────────
+
+// --- Monthly ---
+function monthlyPeriod(card, year, month) {
+  const cutDate   = new Date(year, month-1, clampDay(card.cutDay, year, month));
+  let ly=year, lm=month+card.limitOffset;
+  if (lm>12) { lm-=12; ly++; }
+  const limitDate = new Date(ly, lm-1, clampDay(card.limitDay, ly, lm));
+  return { cutDate, limitDate, key:`${card.id}:M:${year}-${String(month).padStart(2,'0')}` };
+}
+
+// --- Every N days ---
+function daysPeriodAt(card, ref) {
+  const start = new Date(card.startDate+'T00:00:00');
+  if (ref < start) return null;
+  const n    = Math.floor((ref - start) / (card.intervalDays * 86400000));
+  const cut  = new Date(start.getTime() + n * card.intervalDays * 86400000);
+  const lim  = new Date(cut.getTime()  + card.limitDays * 86400000);
+  return { cutDate:cut, limitDate:lim, key:`${card.id}:D:${cut.toISOString().slice(0,10)}`, n };
+}
+function daysPrevPeriod(card, curr) {
+  if (!curr || curr.n<=0) return null;
+  const cut = new Date(curr.cutDate.getTime() - card.intervalDays * 86400000);
+  const lim = new Date(cut.getTime() + card.limitDays * 86400000);
+  return { cutDate:cut, limitDate:lim, key:`${card.id}:D:${cut.toISOString().slice(0,10)}`, n:curr.n-1 };
+}
+
+// --- Every N months ---
+function monthsHasCut(card, year, month) {
+  const [sy,sm] = card.startYearMonth.split('-').map(Number);
+  const diff = (year-sy)*12 + (month-sm);
+  return diff>=0 && diff % card.intervalMonths === 0;
+}
+function monthsPeriod(card, year, month) {
+  if (!monthsHasCut(card, year, month)) return null;
+  const cutDate = new Date(year, month-1, clampDay(card.cutDayM, year, month));
+  let ly=year, lm=month+card.limitOffsetM;
+  if (lm>12) { lm-=12; ly++; }
+  const limitDate = new Date(ly, lm-1, clampDay(card.limitDayM, ly, lm));
+  return { cutDate, limitDate, key:`${card.id}:NM:${year}-${String(month).padStart(2,'0')}` };
+}
+
+// Period to display in monthly tab view (or null = no period this month)
+function viewPeriod(card, year, month) {
+  if (card.cycleType==='monthly') return monthlyPeriod(card, year, month);
+  if (card.cycleType==='months')  return monthsPeriod(card, year, month);
+  if (card.cycleType==='days') {
+    const t    = today0();
+    const curr = daysPeriodAt(card, t);
+    const prev = daysPrevPeriod(card, curr);
+    const mStart = new Date(year, month-1, 1);
+    const fromStart = daysPeriodAt(card, mStart);
+    for (const p of [curr, prev, fromStart]) {
+      if (!p) continue;
+      const cy=p.cutDate.getFullYear(), cm=p.cutDate.getMonth()+1;
+      const ly=p.limitDate.getFullYear(), lm=p.limitDate.getMonth()+1;
+      if ((cy===year&&cm===month)||(ly===year&&lm===month)) return p;
+    }
+    return null;
+  }
+  return null;
+}
+
+// Status of a period
+function pStatus(cutDate, limitDate) {
+  const t=today0();
+  if (t>limitDate) return 'vencido';
+  if (t>=cutDate)  return 'activo';
+  return 'futuro';
+}
+
+// All unpaid pending periods for a card (cutDate <= today)
+function pendingOf(card, payments) {
+  const t=today0(), out=[];
+  if (card.cycleType==='monthly') {
+    for (let i=-4;i<=0;i++) {
+      const {year,month}=monthMeta(i);
+      const p=monthlyPeriod(card,year,month);
+      if (p.cutDate<=t && !payments[p.key]) out.push(p);
+    }
+  }
+  if (card.cycleType==='days') {
+    const curr=daysPeriodAt(card,t), prev=daysPrevPeriod(card,curr);
+    for (const p of [prev,curr]) {
+      if (p && p.cutDate<=t && !payments[p.key]) out.push(p);
+    }
+  }
+  if (card.cycleType==='months') {
+    for (let i=-8;i<=0;i++) {
+      const {year,month}=monthMeta(i);
+      const p=monthsPeriod(card,year,month);
+      if (p && p.cutDate<=t && !payments[p.key]) out.push(p);
+    }
+  }
+  return out;
+}
+
+// ── Shared styles ─────────────────────────────────────────────
+const inp = {
+  display:'block', width:'100%', background:'#111827',
+  border:'1px solid #2a3044', borderRadius:8,
+  padding:'8px 10px', color:'#E8E8E8', fontSize:13,
+  marginTop:4, boxSizing:'border-box', outline:'none',
+};
+const badgeBase = {fontSize:11,padding:'3px 9px',borderRadius:20,fontWeight:600,whiteSpace:'nowrap'};
+
+// ── Small components ──────────────────────────────────────────
+function Badge({ status, paid }) {
+  if (paid)               return <span style={{...badgeBase,background:'#0c2215',color:'#4ade80'}}>✓ Pagado</span>;
+  if (status==='vencido') return <span style={{...badgeBase,background:'#2b0d0d',color:'#f87171'}}>! Urgente</span>;
+  if (status==='activo')  return <span style={{...badgeBase,background:'#1c1500',color:'#fbbf24'}}>En plazo</span>;
+  return                         <span style={{...badgeBase,background:'#141824',color:'#4a5568'}}>Pendiente</span>;
+}
+
+function ProgressBar({ cutDate, limitDate, paid, color }) {
+  const status = pStatus(cutDate, limitDate);
+  const pct    = pctElapsed(cutDate, limitDate);
+  const dl     = daysRemaining(limitDate);
+  const barC   = paid?'#4ade80': status==='vencido'?'#EF4444': pct>80?'#F59E0B': color;
+
+  let label = paid ? '✓ Listo'
+    : status==='futuro'  ? `Corte: ${fmtDateShort(cutDate)}`
+    : status==='vencido' ? '⚠ Límite superado'
+    : dl<=0              ? '⚠ Vence hoy'
+    : `${dl}d para límite · ${fmtDateShort(limitDate)}`;
+
+  const labelC = paid?'#4ade80': status==='vencido'?'#f87171':'#4a5568';
+
+  return (
+    <div style={{marginTop:7}}>
+      <div style={{background:'#1a1f2e',borderRadius:3,height:3,overflow:'hidden'}}>
+        <div style={{height:'100%',width:`${paid?100:pct}%`,background:barC,borderRadius:3}}/>
+      </div>
+      <div style={{fontSize:10,color:labelC,marginTop:4}}>{label}</div>
+    </div>
+  );
+}
+
+function CheckBtn({ checked, color, onToggle }) {
+  return (
+    <button onClick={onToggle} style={{
+      width:30,height:30,borderRadius:8,flexShrink:0,
+      border:`2px solid ${checked?color:'#2a3044'}`,
+      background:checked?color:'transparent',
+      cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',
+      fontSize:15,color:'#0D1117',fontWeight:800,transition:'all 0.15s',
+    }}>{checked?'✓':''}</button>
+  );
+}
+
+// ── Card row (month view) ─────────────────────────────────────
+function CardRow({ card, year, month, payments, onToggle }) {
+  const period = viewPeriod(card, year, month);
+  const paid   = period ? !!payments[period.key] : false;
+  const status = period ? pStatus(period.cutDate, period.limitDate) : 'none';
+
+  const noPeriod = !period;
+
+  return (
+    <div style={{
+      background:'#0f1520',
+      border:`1px solid ${paid?'#1a3826':status==='vencido'?'#3b1616':'#1e2535'}`,
+      borderRadius:12, padding:'13px 14px',
+      display:'flex', alignItems:'flex-start', gap:12,
+      opacity: noPeriod ? 0.35 : paid ? 0.72 : 1,
+    }}>
+      <div style={{width:3,minHeight:46,borderRadius:2,background:paid?'#4ade80':card.color,flexShrink:0,marginTop:2}}/>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+          <div>
+            <div style={{fontWeight:600,fontSize:14,color:'#E8E8E8',marginBottom:2}}>{card.name}</div>
+            <div style={{fontSize:11,color:'#3a4455'}}>
+              {noPeriod ? 'Sin corte este mes'
+                : `Corte ${fmtDateShort(period.cutDate)} · Límite ${fmtDateShort(period.limitDate)}`}
+            </div>
+          </div>
+          {!noPeriod && <Badge status={status} paid={paid}/>}
+        </div>
+        {!noPeriod && (
+          <ProgressBar cutDate={period.cutDate} limitDate={period.limitDate} paid={paid} color={card.color}/>
+        )}
+      </div>
+      {!noPeriod && (
+        <CheckBtn checked={paid} color={card.color} onToggle={() => onToggle(period.key)}/>
+      )}
+    </div>
+  );
+}
+
+// ── Summary bar ───────────────────────────────────────────────
+function SummaryBar({ cards, year, month, payments }) {
+  const relevant = cards.filter(c => !!viewPeriod(c, year, month));
+  const paidN    = relevant.filter(c => {
+    const p = viewPeriod(c, year, month);
+    return p && !!payments[p.key];
+  }).length;
+  const pct    = relevant.length ? (paidN/relevant.length)*100 : 0;
+  const allOk  = relevant.length>0 && paidN===relevant.length;
+  return (
+    <div style={{background:'#0f1520',border:'1px solid #1e2535',borderRadius:12,
+      padding:'13px 16px',marginBottom:16}}>
+      <div style={{display:'flex',justifyContent:'space-between',marginBottom:8,alignItems:'center'}}>
+        <span style={{fontSize:12,color:'#4a5568'}}>Progreso del mes</span>
+        <span style={{fontSize:13,fontWeight:700,color:allOk?'#4ade80':'#E8E8E8'}}>
+          {paidN}/{relevant.length} {allOk?'✓ Completado':'pagadas'}
+        </span>
+      </div>
+      <div style={{background:'#1a1f2e',borderRadius:4,height:5,overflow:'hidden'}}>
+        <div style={{height:'100%',width:`${pct}%`,background:allOk?'#4ade80':'#7EB5A6',borderRadius:4}}/>
+      </div>
+    </div>
+  );
+}
+
+// ── Pending view ──────────────────────────────────────────────
+function PendingView({ cards, payments, onToggle }) {
+  const t = today0();
+  const items = [];
+  cards.forEach(card => {
+    pendingOf(card, payments).forEach(p => {
+      const status = pStatus(p.cutDate, p.limitDate);
+      const dl = daysRemaining(p.limitDate);
+      items.push({ card, period:p, status, dl });
+    });
+  });
+
+  // Sort: overdue first (by most days past), then activo by days remaining asc
+  items.sort((a,b) => {
+    const av = a.status==='vencido', bv = b.status==='vencido';
+    if (av&&!bv) return -1;
+    if (!av&&bv) return 1;
+    return a.dl - b.dl;
+  });
+
+  if (items.length===0) return (
+    <div style={{
+      display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+      padding:'60px 20px',gap:12,
+    }}>
+      <div style={{fontSize:36}}>✓</div>
+      <div style={{fontSize:17,fontWeight:700,color:'#4ade80'}}>Todo al corriente</div>
+      <div style={{fontSize:13,color:'#3a4455',textAlign:'center'}}>
+        No hay pagos pendientes en este momento
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:9}}>
+      <div style={{fontSize:11,color:'#3a4455',letterSpacing:0.5,marginBottom:2}}>
+        {items.length} pago{items.length!==1?'s':''} pendiente{items.length!==1?'s':''}
+      </div>
+      {items.map(({card,period,status,dl}) => (
+        <div key={period.key} style={{
+          background:'#0f1520',
+          border:`1px solid ${status==='vencido'?'#3b1616':'#1e2535'}`,
+          borderRadius:12,padding:'13px 14px',
+          display:'flex',alignItems:'center',gap:12,
+        }}>
+          <div style={{width:3,alignSelf:'stretch',borderRadius:2,background:card.color,flexShrink:0}}/>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+              <div>
+                <div style={{fontWeight:600,fontSize:14,color:'#E8E8E8',marginBottom:2}}>{card.name}</div>
+                <div style={{fontSize:11,color:'#3a4455'}}>
+                  Corte {fmtDate(period.cutDate)} · Límite {fmtDate(period.limitDate)}
+                </div>
+              </div>
+              <Badge status={status} paid={false}/>
+            </div>
+            <ProgressBar cutDate={period.cutDate} limitDate={period.limitDate} paid={false} color={card.color}/>
+          </div>
+          <CheckBtn checked={false} color={card.color} onToggle={() => onToggle(period.key)}/>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Settings ──────────────────────────────────────────────────
+function FieldRow({ children }) {
+  return <div style={{display:'flex',gap:8,marginTop:8}}>{children}</div>;
+}
+function Label({ text, children }) {
+  return (
+    <label style={{flex:1,fontSize:11,color:'#4a5568'}}>
+      {text}{children}
+    </label>
+  );
+}
+function NumInp({ value, min=1, max=31, onChange }) {
+  return <input type="number" min={min} max={max} value={value} onChange={e=>onChange(e.target.value)} style={inp}/>;
+}
+
+function CardEditor({ card, onChange, onDelete }) {
+  const upd = (field,val) => onChange({...card,[field]:val});
+  const updN = (field,val) => onChange({...card,[field]:parseInt(val)||0});
+
+  return (
+    <div style={{background:'#111827',borderRadius:12,padding:14,marginBottom:10}}>
+      {/* Name + color + delete */}
+      <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:10}}>
+        <input type="color" value={card.color} onChange={e=>upd('color',e.target.value)}
+          style={{width:30,height:30,borderRadius:6,border:'1px solid #2a3044',
+            cursor:'pointer',padding:2,background:'#1a1f2e',flexShrink:0}}/>
+        <input value={card.name} onChange={e=>upd('name',e.target.value)}
+          placeholder="Nombre del servicio"
+          style={{...inp,marginTop:0,flex:1}}/>
+        <button onClick={onDelete} title="Eliminar"
+          style={{background:'#2b0d0d',border:'1px solid #5a1f1f',color:'#f87171',
+            width:30,height:30,borderRadius:8,cursor:'pointer',fontSize:14,
+            flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center'}}>
+          🗑
+        </button>
+      </div>
+
+      {/* Cycle type */}
+      <label style={{fontSize:11,color:'#4a5568'}}>
+        Tipo de ciclo
+        <select value={card.cycleType} onChange={e=>upd('cycleType',e.target.value)} style={{...inp,fontSize:12}}>
+          <option value="monthly">Mensual — fecha fija</option>
+          <option value="days">Cada N días naturales</option>
+          <option value="months">Cada N meses</option>
+        </select>
+      </label>
+
+      {/* Monthly fields */}
+      {card.cycleType==='monthly' && (
+        <FieldRow>
+          <Label text="Día de corte"><NumInp value={card.cutDay}   onChange={v=>updN('cutDay',v)}/></Label>
+          <Label text="Día límite">  <NumInp value={card.limitDay} onChange={v=>updN('limitDay',v)}/></Label>
+          <Label text="Mes límite">
+            <select value={card.limitOffset} onChange={e=>updN('limitOffset',e.target.value)} style={{...inp,fontSize:12}}>
+              <option value="0">Mismo</option>
+              <option value="1">Siguiente</option>
+            </select>
+          </Label>
+        </FieldRow>
+      )}
+
+      {/* Days fields */}
+      {card.cycleType==='days' && (
+        <>
+          <FieldRow>
+            <Label text="Cada cuántos días">
+              <NumInp value={card.intervalDays} min={1} max={365} onChange={v=>updN('intervalDays',v)}/>
+            </Label>
+            <Label text="Días para pagar">
+              <NumInp value={card.limitDays} min={1} max={60} onChange={v=>updN('limitDays',v)}/>
+            </Label>
+          </FieldRow>
+          <Label text="Fecha del primer corte">
+            <input type="date" value={card.startDate} onChange={e=>upd('startDate',e.target.value)}
+              style={{...inp}}/>
+          </Label>
+        </>
+      )}
+
+      {/* N-months fields */}
+      {card.cycleType==='months' && (
+        <>
+          <FieldRow>
+            <Label text="Cada cuántos meses">
+              <NumInp value={card.intervalMonths} min={1} max={12} onChange={v=>updN('intervalMonths',v)}/>
+            </Label>
+            <Label text="Día de corte">
+              <NumInp value={card.cutDayM} onChange={v=>updN('cutDayM',v)}/>
+            </Label>
+          </FieldRow>
+          <FieldRow>
+            <Label text="Día límite de pago">
+              <NumInp value={card.limitDayM} onChange={v=>updN('limitDayM',v)}/>
+            </Label>
+            <Label text="Mes del límite">
+              <select value={card.limitOffsetM} onChange={e=>updN('limitOffsetM',e.target.value)} style={{...inp,fontSize:12}}>
+                <option value="0">Mismo</option>
+                <option value="1">Siguiente</option>
+              </select>
+            </Label>
+          </FieldRow>
+          <Label text="Mes del primer corte (YYYY-MM)">
+            <input type="month" value={card.startYearMonth} onChange={e=>upd('startYearMonth',e.target.value)}
+              style={{...inp}}/>
+          </Label>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SettingsPanel({ cards, onSave, onClose }) {
+  const [local, setLocal] = useState(() => JSON.parse(JSON.stringify(cards)));
+  const updCard  = (id,nc) => setLocal(p => p.map(c => c.id===id?nc:c));
+  const delCard  = (id)    => setLocal(p => p.filter(c=>c.id!==id));
+  const addCard  = ()      => setLocal(p => [...p, blankCard(p.length)]);
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.88)',
+      display:'flex',alignItems:'flex-end',justifyContent:'center',zIndex:200}}
+      onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div style={{background:'#0D1117',borderRadius:'20px 20px 0 0',
+        width:'100%',maxWidth:520,maxHeight:'92vh',overflowY:'auto',
+        padding:'22px 16px 48px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}}>
+          <div style={{fontWeight:700,fontSize:16,color:'#E8E8E8'}}>Configurar servicios</div>
+          <button onClick={onClose} style={{background:'none',border:'none',color:'#555',
+            fontSize:22,cursor:'pointer',lineHeight:1}}>✕</button>
+        </div>
+
+        {local.map(card => (
+          <CardEditor key={card.id} card={card}
+            onChange={nc => updCard(card.id,nc)}
+            onDelete={() => delCard(card.id)}/>
+        ))}
+
+        <button onClick={addCard} style={{
+          width:'100%',padding:'12px',background:'transparent',
+          border:'1px dashed #2a3044',borderRadius:10,
+          color:'#4a5568',fontSize:13,cursor:'pointer',marginBottom:12,
+        }}>
+          + Agregar servicio
+        </button>
+
+        <button onClick={()=>{ onSave(local); onClose(); }} style={{
+          width:'100%',padding:'14px',background:'#7EB5A6',
+          border:'none',borderRadius:10,color:'#0D1117',
+          fontWeight:700,fontSize:15,cursor:'pointer',
+        }}>
+          Guardar cambios
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── App ────────────────────────────────────────────────────────
+function App() {
+  const [cards,    setCards]    = useState(() => sGet('kp_cards')    || DEFAULT_CARDS);
+  const [payments, setPayments] = useState(() => sGet('kp_payments') || {});
+  const [tab,      setTab]      = useState(0);   // -1 prev, 0 current, 'p' pending
+  const [showCfg,  setShowCfg]  = useState(false);
+
+  const saveCards = nc => { setCards(nc); sSet('kp_cards', nc); };
+
+  const togglePay = key => {
+    const np = {...payments, [key]: !payments[key]};
+    setPayments(np); sSet('kp_payments', np);
+  };
+
+  const { year, month } = monthMeta(tab==='p' ? 0 : tab);
+
+  // Count pending for badge
+  const pendingCount = useMemo(() => {
+    let n=0;
+    cards.forEach(c => { n += pendingOf(c,payments).length; });
+    return n;
+  }, [cards, payments]);
+
+  const TABS = [
+    { id:-1, label: (() => { const m=monthMeta(-1); return `${MESES[m.month-1]}`; })() },
+    { id:0,  label: (() => { const m=monthMeta(0);  return `${MESES[m.month-1]}`; })() },
+    { id:'p',label: 'Pendientes' },
+  ];
+
+  return (
+    <div style={{minHeight:'100vh',background:'#0D1117',color:'#E8E8E8',
+      padding:'env(safe-area-inset-top,28px) 16px 64px',maxWidth:480,margin:'0 auto'}}>
+
+      {/* Header */}
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:24,paddingTop:14}}>
+        <div>
+          <div style={{fontSize:10,letterSpacing:3.5,color:'#1e2535',textTransform:'uppercase',marginBottom:4}}>Kalifa · Pagos</div>
+          <div style={{fontSize:24,fontWeight:800,letterSpacing:-0.8}}>Tarjetas</div>
+        </div>
+        <button onClick={()=>setShowCfg(true)} style={{
+          background:'#111827',border:'1px solid #2a3044',color:'#555',
+          padding:'8px 12px',borderRadius:9,cursor:'pointer',fontSize:12,
+          display:'flex',alignItems:'center',gap:5,marginTop:4,
+        }}>
+          <span style={{fontSize:14}}>⚙</span> Configurar
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:'flex',marginBottom:18,background:'#0f1520',
+        borderRadius:11,padding:4,border:'1px solid #1e2535',gap:3}}>
+        {TABS.map(t => {
+          const active = tab===t.id;
+          return (
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{
+              flex:1,padding:'8px 0',borderRadius:8,border:'none',cursor:'pointer',
+              background:active?'#1e2a3a':'transparent',
+              color:active?'#E8E8E8':'#3a4455',
+              fontSize:12,fontWeight:active?700:400,
+              transition:'all 0.2s',position:'relative',
+            }}>
+              {t.label}
+              {t.id==='p' && pendingCount>0 && (
+                <span style={{
+                  position:'absolute',top:4,right:6,
+                  background:'#EF4444',color:'#fff',
+                  borderRadius:99,fontSize:9,fontWeight:700,
+                  padding:'1px 5px',lineHeight:'14px',
+                }}>{pendingCount}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Content */}
+      {tab!=='p' ? (
+        <>
+          <SummaryBar cards={cards} year={year} month={month} payments={payments}/>
+          <div style={{display:'flex',flexDirection:'column',gap:9}}>
+            {cards.map(card => (
+              <CardRow key={card.id} card={card}
+                year={year} month={month}
+                payments={payments} onToggle={togglePay}/>
+            ))}
+          </div>
+        </>
+      ) : (
+        <PendingView cards={cards} payments={payments} onToggle={togglePay}/>
+      )}
+
+      <div style={{marginTop:22,textAlign:'center',fontSize:10,color:'#1e2535',letterSpacing:0.3}}>
+        Toca ✓ para marcar como pagado · Datos guardados localmente
+      </div>
+
+      {showCfg && <SettingsPanel cards={cards} onSave={saveCards} onClose={()=>setShowCfg(false)}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));
+  }
+</script>
+</body>
+</html>
