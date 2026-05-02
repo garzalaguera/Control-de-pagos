@@ -1,14 +1,12 @@
-const CACHE = "kalifa-pagos-v3";
+const CACHE = "mis-pagos-v1";
+
+// Only cache local files — no external CDN dependencies
 const ASSETS = [
   "./",
   "./index.html",
-  "./manifest.json",
-  "https://unpkg.com/react@18/umd/react.production.min.js",
-  "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
-  "https://unpkg.com/@babel/standalone/babel.min.js"
+  "./manifest.json"
 ];
 
-// ── Install & activate ─────────────────────────────────────────
 self.addEventListener("install", e => {
   e.waitUntil(
     caches.open(CACHE)
@@ -20,18 +18,20 @@ self.addEventListener("install", e => {
 self.addEventListener("activate", e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k!==CACHE).map(k => caches.delete(k))))
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
 
-// ── Fetch (offline cache) ──────────────────────────────────────
 self.addEventListener("fetch", e => {
+  // Only handle same-origin requests
+  if (!e.request.url.startsWith(self.location.origin)) return;
+
   e.respondWith(
     caches.match(e.request).then(cached => {
       if (cached) return cached;
       return fetch(e.request).then(res => {
-        if (res && res.status===200 && res.type!=="opaque") {
+        if (res && res.status === 200) {
           const clone = res.clone();
           caches.open(CACHE).then(c => c.put(e.request, clone));
         }
@@ -41,10 +41,10 @@ self.addEventListener("fetch", e => {
   );
 });
 
-// ── IndexedDB (shared with page) ──────────────────────────────
+// ── IndexedDB ─────────────────────────────────────────────────
 function openDB() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open("kalifa-db", 1);
+    const r = indexedDB.open("mispagos-db", 1);
     r.onupgradeneeded = e => e.target.result.createObjectStore("kv");
     r.onsuccess = e => res(e.target.result);
     r.onerror   = () => rej(r.error);
@@ -53,7 +53,7 @@ function openDB() {
 async function idbGet(key) {
   const db = await openDB();
   return new Promise((res, rej) => {
-    const tx = db.transaction("kv","readonly");
+    const tx  = db.transaction("kv", "readonly");
     const req = tx.objectStore("kv").get(key);
     req.onsuccess = () => res(req.result);
     req.onerror   = () => rej(req.error);
@@ -70,35 +70,24 @@ async function checkPayments() {
   try { data = await idbGet("upcoming"); } catch(e) { return; }
   if (!data || !data.items || !data.items.length) return;
 
-  const today = new Date(); today.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
 
   for (const item of data.items) {
     const limit = new Date(item.limitDate);
     const days  = Math.ceil((limit - today) / 86400000);
-
-    // Only notify for items due in 0–5 days or already overdue
     if (days > 5) continue;
 
-    let title, body;
-    if (days < 0) {
-      title = "⚠ Pago vencido — Kalifa";
-      body  = `${item.cardName}: el límite de pago ya pasó`;
-    } else if (days === 0) {
-      title = "⚠ Vence HOY — Kalifa";
-      body  = `${item.cardName}: último día para pagar`;
-    } else {
-      title = "Recordatorio de pago — Kalifa";
-      body  = `${item.cardName}: vence en ${days} día${days!==1?"s":""}`;
-    }
+    const title = days < 0  ? "⚠ Pago vencido"
+                : days === 0 ? "⚠ Vence HOY"
+                :              "Recordatorio de pago";
+    const body  = days < 0  ? `${item.cardName}: el límite ya pasó`
+                : days === 0 ? `${item.cardName}: último día para pagar`
+                :              `${item.cardName}: vence en ${days} día${days !== 1 ? "s" : ""}`;
 
     await self.registration.showNotification(title, {
-      body,
-      tag:     `kp-${item.key}`,
-      icon:    "./icon-192.png",
-      badge:   "./icon-192.png",
-      vibrate: [200, 100, 200],
-      data:    { url: "./" },
-      actions: [{ action:"open", title:"Ver pagos" }]
+      body, tag: `mp-${item.key}`,
+      icon: "./icon-192.png", vibrate: [200, 100, 200],
+      data: { url: "./" }
     });
   }
 }
@@ -108,9 +97,9 @@ self.addEventListener("notificationclick", e => {
   e.notification.close();
   const url = e.notification.data?.url || "./";
   e.waitUntil(
-    clients.matchAll({ type:"window", includeUncontrolled:true }).then(list => {
-      for (const client of list) {
-        if (client.url.includes("kalifa-pagos") && "focus" in client) return client.focus();
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then(list => {
+      for (const c of list) {
+        if (c.url.includes("Control-de-pagos") && "focus" in c) return c.focus();
       }
       return clients.openWindow(url);
     })
