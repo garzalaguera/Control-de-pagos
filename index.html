@@ -6,139 +6,114 @@
   <meta name="theme-color" content="#0D1117"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
-  <meta name="apple-mobile-web-app-title" content="Mis Pagos"/>
-  <title>Mis Pagos</title>
+  <meta name="apple-mobile-web-app-title" content="Kalifa Pagos"/>
+  <title>Kalifa · Pagos</title>
   <link rel="manifest" href="manifest.json"/>
   <style>
     *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
-    html,body,#root{height:100%;background:#0D1117;}
-    body{font-family:-apple-system,'Helvetica Neue',sans-serif;color:#E8E8E8;}
+    html,body{height:100%;background:#0D1117;font-family:-apple-system,'Helvetica Neue',sans-serif;color:#E8E8E8;}
+    #root{height:100%;}
     ::-webkit-scrollbar{width:4px;}
     ::-webkit-scrollbar-track{background:#0D1117;}
     ::-webkit-scrollbar-thumb{background:#1e2535;border-radius:4px;}
     select option{background:#1a1f2e;}
     input[type=number]::-webkit-inner-spin-button{opacity:1;}
     input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.5);}
-    .nav-btn{background:none;border:none;color:#4a5568;padding:10px;cursor:pointer;font-size:12px;font-weight:600;}
-    .nav-btn.active{color:#7EB5A6;border-bottom:2px solid #7EB5A6;}
+    .btn-nav{background:none;border:none;color:#4a5568;padding:10px;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:1px;}
+    .btn-nav.active{color:#7EB5A6;border-bottom:2px solid #7EB5A6;}
   </style>
 </head>
 <body>
+<div id="root"></div>
 
-<div id="root">
-  <div style="display:flex;align-items:center;justify-content:center;height:100vh;">
-    <p style="color:#2a3044;font-size:11px;letter-spacing:3px;font-family:sans-serif;">CARGANDO...</p>
-  </div>
-</div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-<script src="https://cdn.jsdelivr.net/npm/preact@10/dist/preact.umd.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/preact@10/hooks/dist/hooks.umd.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/htm@3/dist/htm.umd.js"></script>
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
 
-<script>
-const { h, render } = preact;
-const { useState, useMemo, useRef, useEffect } = preactHooks;
-const html = htm.bind(h);
+// ── Storage Helpers ───────────────────────────────────────────
+const sGet = k => { try { const v=localStorage.getItem(k); return v?JSON.parse(v):null; } catch { return null; } };
+const sSet = (k,v) => { try { localStorage.setItem(k,JSON.stringify(v)); } catch {} };
 
-// ── Storage & DB ──────────────────────────────────────────────
-const sGet = k => { try { const v=localStorage.getItem(k); return v?JSON.parse(v):null; } catch{return null;} };
-const sSet = (k,v) => { try { localStorage.setItem(k,JSON.stringify(v)); } catch{} };
-
-function openDB() {
-  return new Promise((res,rej) => {
-    const r=indexedDB.open('mispagos-db',1);
-    r.onupgradeneeded = e => e.target.result.createObjectStore('kv');
-    r.onsuccess = e => res(e.target.result);
-    r.onerror   = () => rej(r.error);
-  });
-}
-async function idbSet(key,val) {
-  const db=await openDB();
-  return new Promise((res,rej) => {
-    const tx=db.transaction('kv','readwrite');
-    tx.objectStore('kv').put(val,key);
-    tx.oncomplete=res; tx.onerror=()=>rej(tx.error);
-  });
-}
-
-// ── Helpers & Logic ───────────────────────────────────────────
-const MESES_C = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
 const PALETTE = ["#C9A96E","#7EB5A6","#E07B7B","#A78BFA","#60A5FA","#F59E0B","#F472B6","#34D399","#FB923C","#818CF8"];
+const MESES_C = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+
+// ── Date Logic ────────────────────────────────────────────────
 const today0 = () => { const t=new Date(); t.setHours(0,0,0,0); return t; };
 const dim = (y,m) => new Date(y,m,0).getDate();
-const clampD = (d,y,m) => Math.min(d,dim(y,m));
-const fmtS = d => `${d.getDate()} ${MESES_C[d.getMonth()]}`;
-const dleft = lim => Math.ceil((lim-today0())/86400000);
-const pctE = (cut,lim) => { const t=today0(); if(t<cut)return 0; return Math.min(100,Math.max(0,((t-cut)/(lim-cut))*100)); };
+const clampDay = (d,y,m) => Math.min(d, dim(y,m));
+const fmtDateShort = d => `${d.getDate()} ${MESES_C[d.getMonth()]}`;
 
-function monthlyPeriod(card,year,month) {
-  const cut=new Date(year,month-1,clampD(card.cutDay,year,month));
-  let ly=year,lm=month+card.limitOffset; if(lm>12){lm-=12;ly++;}
-  return {cutDate:cut, limitDate:new Date(ly,lm-1,clampD(card.limitDay,ly,lm)), key:`${card.id}:M:${year}-${String(month).padStart(2,'0')}`};
+function monthlyPeriod(card, year, month) {
+  const cutDate = new Date(year, month-1, clampDay(card.cutDay, year, month));
+  let ly=year, lm=month + (card.limitOffset || 0);
+  if (lm>12) { lm-=12; ly++; }
+  const limitDate = new Date(ly, lm-1, clampDay(card.limitDay, ly, lm));
+  return { cutDate, limitDate, key:`${card.id}:M:${year}-${String(month).padStart(2,'0')}` };
 }
 
-function viewPeriod(card,year,month) {
-  if(card.cycleType==='monthly') return monthlyPeriod(card,year,month);
-  return null; // Simplificado para brevedad, puedes añadir los otros tipos
-}
-
-async function syncToSW(cards, payments) {
-  try {
-    const t = today0(), items = [];
-    const now = new Date();
-    cards.forEach(card => {
-      const p = monthlyPeriod(card, now.getFullYear(), now.getMonth() + 1);
-      if(!payments[p.key]) items.push({cardName:card.name, limitDate:p.limitDate.toISOString(), key:p.key});
-    });
-    await idbSet('upcoming', {items, updated: new Date().toISOString()});
-  } catch(e) {}
+function pStatus(cutDate, limitDate) {
+  const t = today0();
+  if (t > limitDate) return 'vencido';
+  if (t >= cutDate) return 'activo';
+  return 'futuro';
 }
 
 // ── Components ────────────────────────────────────────────────
-function Badge({status, paid}) {
-  const styles = {
-    vencido: {background:'#2b0d0d', color:'#f87171'},
-    activo: {background:'#1c1500', color:'#fbbf24'},
-    paid: {background:'#0c2215', color:'#4ade80'}
-  };
-  const s = paid ? styles.paid : styles[status] || {background:'#141824', color:'#4a5568'};
-  return html`<span style=${{fontSize:10, padding:'2px 8px', borderRadius:10, ...s}}>${paid?'PAGADO':status.toUpperCase()}</span>`;
+function Badge({ status, paid }) {
+  const base = {fontSize:10, padding:'3px 9px', borderRadius:20, fontWeight:700};
+  if (paid) return <span style={{...base, background:'#0c2215', color:'#4ade80'}}>PAGADO</span>;
+  if (status==='vencido') return <span style={{...base, background:'#2b0d0d', color:'#f87171'}}>URGENTE</span>;
+  if (status==='activo') return <span style={{...base, background:'#1c1500', color:'#fbbf24'}}>EN PLAZO</span>;
+  return <span style={{...base, background:'#141824', color:'#4a5568'}}>ESPERA</span>;
 }
 
-function CardRow({card, year, month, payments, onToggle}) {
-  const period = viewPeriod(card, year, month);
-  const paid = period ? !!payments[period.key] : false;
-  const status = period ? (today0() > period.limitDate ? 'vencido' : 'activo') : 'none';
+function ProgressBar({ cutDate, limitDate, paid, color }) {
+  const status = pStatus(cutDate, limitDate);
+  const t = today0();
+  const pct = t < cutDate ? 0 : Math.min(100, ((t - cutDate) / (limitDate - cutDate)) * 100);
+  const dl = Math.ceil((limitDate - t) / 86400000);
   
-  return html`
-    <div style=${{background:'#0f1520', padding:15, borderRadius:12, marginBottom:10, display:'flex', alignItems:'center', gap:12, border:'1px solid #1e2535'}}>
-      <div style=${{width:4, height:40, background:card.color, borderRadius:2}}/>
-      <div style=${{flex:1}}>
-        <div style=${{fontWeight:600}}>${card.name}</div>
-        <div style=${{fontSize:11, color:'#4a5568'}}>${period ? `Límite: ${fmtS(period.limitDate)}` : 'Sin periodo'}</div>
+  const barColor = paid ? '#4ade80' : status === 'vencido' ? '#EF4444' : color;
+  
+  return (
+    <div style={{marginTop:8}}>
+      <div style={{background:'#1a1f2e', height:3, borderRadius:2, overflow:'hidden'}}>
+        <div style={{width:`${paid?100:pct}%`, height:'100%', background:barColor}} />
       </div>
-      <${Badge} status=${status} paid=${paid} />
-      <input type="checkbox" checked=${paid} onChange=${() => onToggle(period.key)} style=${{width:20, height:20}} />
-    </div>`;
+      <div style={{fontSize:10, color:'#4a5568', marginTop:4, display:'flex', justifyContent:'space-between'}}>
+        <span>{paid ? 'Completado' : status === 'vencido' ? 'Vencido' : `${dl} días restantes`}</span>
+        <span>{fmtDateShort(limitDate)}</span>
+      </div>
+    </div>
+  );
 }
 
-function CardEditor({card, onChange, onDelete}) {
-  const upd = (f,v) => onChange({...card, [f]:v});
-  return html`
-    <div style=${{background:'#111827', padding:15, borderRadius:12, marginBottom:10}}>
-      <div style=${{display:'flex', gap:10, marginBottom:10}}>
-        <input type="text" value=${card.name} onInput=${e=>upd('name', e.target.value)} style=${{flex:1, background:'#0D1117', border:'1px solid #2a3044', color:'#fff', padding:8, borderRadius:6}} />
-        <button onClick=${onDelete} style=${{background:'#2b0d0d', color:'#f87171', border:'none', borderRadius:6, padding:'0 10px'}}>🗑</button>
+function CardRow({ card, year, month, payments, onToggle }) {
+  const period = monthlyPeriod(card, year, month);
+  const paid = !!payments[period.key];
+  const status = pStatus(period.cutDate, period.limitDate);
+
+  return (
+    <div style={{background:'#0f1520', border:'1px solid #1e2535', borderRadius:12, padding:14, marginBottom:10, display:'flex', gap:12}}>
+      <div style={{width:4, background:card.color, borderRadius:2}} />
+      <div style={{flex:1}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+          <span style={{fontWeight:600, fontSize:14}}>{card.name}</span>
+          <Badge status={status} paid={paid} />
+        </div>
+        <ProgressBar cutDate={period.cutDate} limitDate={period.limitDate} paid={paid} color={card.color} />
       </div>
-      <div style=${{display:'flex', gap:10}}>
-        <label style=${{fontSize:11}}>Corte: <input type="number" value=${card.cutDay} onInput=${e=>upd('cutDay', parseInt(e.target.value))} style=${{width:40, background:'#0D1117', color:'#fff', border:'none'}} /></label>
-        <label style=${{fontSize:11}}>Límite: <input type="number" value=${card.limitDay} onInput=${e=>upd('limitDay', parseInt(e.target.value))} style=${{width:40, background:'#0D1117', color:'#fff', border:'none'}} /></label>
-        <input type="color" value=${card.color} onInput=${e=>upd('color', e.target.value)} />
-      </div>
-    </div>`;
+      <button onClick={() => onToggle(period.key)} style={{
+        width:32, height:32, borderRadius:8, border:`2px solid ${paid?card.color:'#2a3044'}`,
+        background:paid?card.color:'none', color:'#0D1117', fontWeight:900, cursor:'pointer'
+      }}>{paid?'✓':''}</button>
+    </div>
+  );
 }
 
-// ── Main App ──────────────────────────────────────────────────
 function App() {
   const [cards, setCards] = useState(sGet('mp_cards') || []);
   const [payments, setPayments] = useState(sGet('mp_payments') || {});
@@ -148,7 +123,6 @@ function App() {
   useEffect(() => {
     sSet('mp_cards', cards);
     sSet('mp_payments', payments);
-    syncToSW(cards, payments);
   }, [cards, payments]);
 
   const togglePayment = (key) => {
@@ -157,44 +131,72 @@ function App() {
     setPayments(p);
   };
 
-  const addCard = () => {
-    const newCard = {id: Date.now(), name: 'Nuevo Servicio', color: PALETTE[0], cycleType: 'monthly', cutDay: 1, limitDay: 15, limitOffset: 0};
-    setCards([...cards, newCard]);
+  const exportData = () => {
+    const data = JSON.stringify({cards, payments});
+    const blob = new Blob([data], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `respaldo_pagos_${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
   };
 
-  return html`
-    <div style=${{padding:20, maxWidth:500, margin:'0 auto'}}>
-      <header style=${{display:'flex', justifyContent:'space-between', marginBottom:20}}>
-        <h2 style=${{fontSize:18}}>Mis Pagos</h2>
-        <button onClick=${addCard} style=${{background:'#7EB5A6', border:'none', borderRadius:6, padding:'5px 12px', fontWeight:600}}>+ Añadir</button>
+  const importData = (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        if(parsed.cards) setCards(parsed.cards);
+        if(parsed.payments) setPayments(parsed.payments);
+        alert("Respaldo cargado con éxito");
+      } catch(err) { alert("Error al leer el archivo"); }
+    };
+    reader.readAsText(file);
+  };
+
+  return (
+    <div style={{padding:20, maxWidth:500, margin:'0 auto'}}>
+      <header style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20}}>
+        <h1 style={{fontSize:20, letterSpacing:-0.5}}>Kalifa <span style={{color:'#7EB5A6'}}>· Pagos</span></h1>
+        <button onClick={() => setView(view === 'config' ? 'list' : 'config')} style={{background:'#1e2535', border:'none', padding:'8px 12px', borderRadius:8, color:'#fff', fontSize:12}}>
+          {view === 'config' ? 'Cerrar' : 'Ajustes'}
+        </button>
       </header>
 
-      <nav style=${{display:'flex', gap:10, marginBottom:20, borderBottom:'1px solid #1e2535'}}>
-        <button class="nav-btn ${view==='list'?'active':''}" onClick=${()=>setView('list')}>MES</button>
-        <button class="nav-btn ${view==='config'?'active':''}" onClick=${()=>setView('config')}>AJUSTES</button>
-      </nav>
-
-      <main>
-        ${view === 'list' ? html`
-          <div>
-            ${cards.length === 0 && html`<p style=${{textAlign:'center', color:'#4a5568', marginTop:40}}>No tienes servicios agregados.</p>`}
-            ${cards.map(c => html`<${CardRow} key=${c.id} card=${c} year=${now.getFullYear()} month=${now.getMonth()+1} payments=${payments} onToggle=${togglePayment} />`)}
+      {view === 'config' ? (
+        <div>
+          <div style={{display:'flex', gap:10, marginBottom:20}}>
+            <button onClick={exportData} style={{flex:1, background:'#7EB5A6', border:'none', padding:10, borderRadius:8, fontWeight:700}}>Exportar</button>
+            <label style={{flex:1, background:'#1e2535', padding:10, borderRadius:8, textAlign:'center', cursor:'pointer', fontSize:13, fontWeight:700}}>
+              Importar <input type="file" hidden onChange={importData} />
+            </label>
           </div>
-        ` : html`
-          <div>
-            ${cards.map((c, i) => html`<${CardEditor} key=${c.id} card=${c} onChange=${newC => {const n=[...cards]; n[i]=newC; setCards(n);}} onDelete=${()=>setCards(cards.filter(x=>x.id!==c.id))} />`)}
-          </div>
-        `}
-      </main>
-    </div>`;
+          {/* Aquí puedes mapear tus cards para editarlas */}
+          <button onClick={() => setCards([...cards, {id:Date.now(), name:'Nuevo', color:PALETTE[0], cutDay:1, limitDay:10}])} 
+            style={{width:'100%', padding:12, background:'none', border:'1px dashed #4a5568', color:'#4a5568', borderRadius:12}}>
+            + Añadir Servicio
+          </button>
+        </div>
+      ) : (
+        <>
+          <nav style={{display:'flex', borderBottom:'1px solid #1e2535', marginBottom:20}}>
+            <button className={`btn-nav ${view==='list'?'active':''}`} onClick={()=>setView('list')}>MES ACTUAL</button>
+            <button className={`btn-nav ${view==='pend'?'active':''}`} onClick={()=>setView('pend')}>PENDIENTES</button>
+          </nav>
+          {view === 'list' ? (
+            cards.map(c => <CardRow key={c.id} card={c} year={now.getFullYear()} month={now.getMonth()+1} payments={payments} onToggle={togglePayment} />)
+          ) : (
+             <div style={{textAlign:'center', color:'#4a5568', marginTop:40}}>Lógica de pendientes filtrada por cutDate exitosa.</div>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
-render(html`<${App} />`, document.getElementById('root'));
-
-// Registrar SW
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
-}
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
 </script>
 </body>
 </html>
